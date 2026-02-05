@@ -2,6 +2,7 @@ import requests
 import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
+from zhipuai import ZhipuAI
 import os
 
 # ========== 配置区 ==========
@@ -9,6 +10,9 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 SMTP_USER = os.environ.get("SMTP_USER")
 SMTP_PASS = os.environ.get("SMTP_PASS")
 TO_EMAIL = os.environ.get("TO_EMAIL")
+
+ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY")
+client = ZhipuAI(api_key=ZHIPU_API_KEY)
 
 SMTP_HOST = "smtp.qq.com"
 SMTP_PORT = 587
@@ -60,6 +64,48 @@ def build_email_content(repos):
     return "\n".join(lines)
 
 
+def repos_to_text(repos):
+    blocks = []
+    for repo in repos:
+        blocks.append(
+            f"""
+项目名：{repo['name']}
+Stars：{repo['stargazers_count']}
+描述：{repo['description']}
+链接：{repo['html_url']}
+"""
+        )
+    return "\n".join(blocks)
+
+def llm_summarize_topic(topic_name, material):
+    prompt = f"""
+你是一名资深 AI 分析师，请根据以下素材，
+整理【{topic_name}】的每日简报，要求：
+
+1. 中文
+2. 包含：
+   - 今日要点（2-3 条）
+   - 值得关注内容（简述）
+   - 一句话趋势判断
+3. 偏理性、技术 / 行业视角
+4. 总字数不超过 200 字
+
+素材如下：
+{material}
+"""
+
+    response = client.chat.completions.create(
+        model="GLM-4.7",
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.4,
+    )
+
+    return response.choices[0].message.content
+
+
+
 # ========== 发送邮件 ==========
 def send_email(content):
     msg = MIMEText(content, "plain", "utf-8")
@@ -75,7 +121,7 @@ def send_email(content):
 
 def main():
     repos = fetch_github_ai_repos()
-    content = build_email_content(repos)
+    content = llm_summarize_topic(repos)
     send_email(content)
 
 
