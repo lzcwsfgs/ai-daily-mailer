@@ -54,12 +54,18 @@ def check_env():
 def fetch_ai_news():
     url = "https://newsapi.org/v2/everything"
     params = {
-        "q": "artificial intelligence OR AI OR LLM",
+        "q": "ChatGPT OR OpenAI OR generative AI OR AI model",
         "language": "en",
+        "from": (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d"),
+        "to": datetime.utcnow().strftime("%Y-%m-%d"),
         "sortBy": "publishedAt",
-        "pageSize": 5,
+        "pageSize": 10,
         "apiKey": NEWS_API_KEY,
     }
+
+    r = requests.get(url, params=params, timeout=20)
+    r.raise_for_status()
+    return r.json().get("articles", [])
 
     r = requests.get(url, params=params, timeout=20)
     r.raise_for_status()
@@ -82,7 +88,7 @@ def news_to_text(articles):
 
 # ========== GitHub 搜索 ==========
 def fetch_github_ai_repos():
-    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday = (datetime.utcnow() - timedelta(days=3)).strftime("%Y-%m-%d")
 
     query = (
         f"AI OR LLM OR agent "
