@@ -5,19 +5,82 @@ from datetime import datetime, timedelta
 from zhipuai import ZhipuAI
 import os
 
-# ========== 配置区 ==========
+
+# ========== 环境变量 ==========
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 SMTP_USER = os.environ.get("SMTP_USER")
 SMTP_PASS = os.environ.get("SMTP_PASS")
 TO_EMAIL = os.environ.get("TO_EMAIL")
-
 ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY")
-client = ZhipuAI(api_key=ZHIPU_API_KEY)
+NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
 
 SMTP_HOST = "smtp.qq.com"
 SMTP_PORT = 587
 
-# ========== 搜 GitHub AI 项目 ==========
+
+# ========== LLM ==========
+client = ZhipuAI(api_key=ZHIPU_API_KEY)
+
+
+# ========== 主题配置 ==========
+TOPICS = [
+    {
+        "name": "AI 技术 & 开源项目",
+        "type": "github",
+    },
+    {
+        "name": "AI 行业新闻",
+        "type": "news",
+    }
+]
+
+
+# ========== 环境变量自检 ==========
+def check_env():
+    required = [
+        "GITHUB_TOKEN",
+        "SMTP_USER",
+        "SMTP_PASS",
+        "TO_EMAIL",
+        "ZHIPU_API_KEY",
+        "NEWS_API_KEY",
+    ]
+    missing = [k for k in required if not os.environ.get(k)]
+    if missing:
+        raise RuntimeError(f"❌ 缺少环境变量: {', '.join(missing)}")
+
+
+# ========== NewsAPI ==========
+def fetch_ai_news():
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": "artificial intelligence OR AI OR LLM",
+        "language": "en",
+        "sortBy": "publishedAt",
+        "pageSize": 5,
+        "apiKey": NEWS_API_KEY,
+    }
+
+    r = requests.get(url, params=params, timeout=20)
+    r.raise_for_status()
+    return r.json()["articles"]
+
+
+def news_to_text(articles):
+    blocks = []
+    for a in articles:
+        blocks.append(
+            f"""
+标题：{a.get('title')}
+来源：{a.get('source', {}).get('name')}
+摘要：{a.get('description')}
+链接：{a.get('url')}
+"""
+        )
+    return "\n".join(blocks)
+
+
+# ========== GitHub 搜索 ==========
 def fetch_github_ai_repos():
     yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -30,7 +93,7 @@ def fetch_github_ai_repos():
 
     url = "https://api.github.com/search/repositories"
     headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
     }
     params = {
@@ -45,38 +108,21 @@ def fetch_github_ai_repos():
     return r.json()["items"]
 
 
-# ========== 生成邮件内容 ==========
-def build_email_content(repos):
-    lines = []
-    lines.append(f"📌 AI GitHub 日报（{datetime.now().strftime('%Y-%m-%d')}）\n")
-
-    if not repos:
-        lines.append("今天没有发现新的高热度 AI 项目。")
-        return "\n".join(lines)
-
-    for i, repo in enumerate(repos, 1):
-        lines.append(
-            f"{i}. {repo['name']} ⭐ {repo['stargazers_count']}\n"
-            f"   {repo['description']}\n"
-            f"   {repo['html_url']}\n"
-        )
-
-    return "\n".join(lines)
-
-
 def repos_to_text(repos):
     blocks = []
     for repo in repos:
         blocks.append(
             f"""
-项目名：{repo['name']}
-Stars：{repo['stargazers_count']}
-描述：{repo['description']}
-链接：{repo['html_url']}
+项目名：{repo.get('name')}
+Stars：{repo.get('stargazers_count')}
+描述：{repo.get('description')}
+链接：{repo.get('html_url')}
 """
         )
     return "\n".join(blocks)
 
+
+# ========== LLM 总结 ==========
 def llm_summarize_topic(topic_name, material):
     prompt = f"""
 你是一名资深 AI 分析师，请根据以下素材，
@@ -95,7 +141,7 @@ def llm_summarize_topic(topic_name, material):
 """
 
     response = client.chat.completions.create(
-        model="GLM-4.7",
+        model="glm-4-air",
         messages=[
             {"role": "user", "content": prompt}
         ],
@@ -105,11 +151,10 @@ def llm_summarize_topic(topic_name, material):
     return response.choices[0].message.content
 
 
-
-# ========== 发送邮件 ==========
+# ========== 发邮件 ==========
 def send_email(content):
     msg = MIMEText(content, "plain", "utf-8")
-    msg["Subject"] = "🤖 每日 AI GitHub 项目速览"
+    msg["Subject"] = f"🤖 AI 日报｜{datetime.now().strftime('%Y-%m-%d')}"
     msg["From"] = SMTP_USER
     msg["To"] = TO_EMAIL
 
@@ -119,11 +164,38 @@ def send_email(content):
         server.send_message(msg)
 
 
+# ========== 主流程 ==========
 def main():
-    repos = fetch_github_ai_repos()
-    content = llm_summarize_topic(repos)
-    send_email(content)
+    sections = []
+
+    for topic in TOPICS:
+        try:
+            if topic["type"] == "github":
+                repos = fetch_github_ai_repos()
+                material = repos_to_text(repos)
+
+            elif topic["type"] == "news":
+                news = fetch_ai_news()
+                material = news_to_text(news)
+
+            summary = llm_summarize_topic(topic["name"], material)
+
+        except Exception as e:
+            summary = f"⚠️ 今日该部分生成失败：{e}"
+
+        sections.append(
+            f"====================\n【{topic['name']}】\n{summary}\n"
+        )
+
+    final_content = (
+        f"🤖 每日 AI 日报｜{datetime.now().strftime('%Y-%m-%d')}\n\n"
+        + "\n".join(sections)
+    )
+
+    send_email(final_content)
 
 
+# ========== 入口 ==========
 if __name__ == "__main__":
+    check_env()
     main()
