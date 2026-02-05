@@ -36,19 +36,105 @@ def check_env():
     print("✅ 环境变量检查通过")
 
 
-# ========== 1. GitHub 热门项目获取 ==========
-def fetch_github_trending():
-    """获取 GitHub 上最近热门的 AI 相关项目"""
-    print("\n🔍 开始获取 GitHub 热门项目...")
+# ========== 1. GitHub 热门项目获取（多策略）==========
+def fetch_github_trending_repos():
+    """
+    策略1: 获取最近活跃的AI项目（过去30天有更新，按stars排序）
+    这是主要策略，更可靠
+    """
+    print("\n🔍 策略1: 获取最近活跃的 GitHub AI 项目...")
 
-    # 查询最近 7 天创建的项目
+    # 查询最近 30 天有更新的项目（pushed，不是created）
+    date_from = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    query = (
+        f"(AI OR LLM OR GPT OR agent OR machine-learning OR deep-learning) "
+        f"pushed:>{date_from} "
+        f"stars:>100 "
+        f"language:Python"
+    )
+
+    url = "https://api.github.com/search/repositories"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+    params = {
+        "q": query,
+        "sort": "stars",
+        "order": "desc",
+        "per_page": 15,
+    }
+
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=30)
+        r.raise_for_status()
+        repos = r.json().get("items", [])
+        print(f"✅ 策略1成功获取 {len(repos)} 个活跃项目")
+        return repos
+    except Exception as e:
+        print(f"❌ 策略1失败: {e}")
+        return []
+
+
+def fetch_github_new_stars():
+    """
+    策略2: 获取最近star增长快的项目（按最近更新时间排序）
+    作为补充策略
+    """
+    print("\n🔍 策略2: 获取最近更新的热门 AI 项目...")
+
+    # 查询最近 7 天有更新的项目
     date_from = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
 
     query = (
-        f"AI OR LLM OR GPT OR agent OR machine-learning "
-        f"created:>{date_from} "
-        f"stars:>10"
+        f"(Claude OR ChatGPT OR Gemini OR agent OR RAG OR vector) "
+        f"pushed:>{date_from} "
+        f"stars:>50"
     )
+
+    url = "https://api.github.com/search/repositories"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+    params = {
+        "q": query,
+        "sort": "updated",
+        "order": "desc",
+        "per_page": 10,
+    }
+
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=30)
+        r.raise_for_status()
+        repos = r.json().get("items", [])
+        print(f"✅ 策略2成功获取 {len(repos)} 个最近更新项目")
+        return repos
+    except Exception as e:
+        print(f"❌ 策略2失败: {e}")
+        return []
+
+
+def fetch_github_trending_topics():
+    """
+    策略3: 查询特定热门AI话题（作为兜底策略）
+    """
+    print("\n🔍 策略3: 获取特定 AI 话题项目...")
+
+    # 最近30天的项目，按stars排序
+    date_from = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    # 2026年的热门话题
+    topics = [
+        "agentic-ai",
+        "llm-agent",
+        "ai-assistant",
+        "code-agent",
+        "rag",
+    ]
+
+    query = f"topics:{' OR '.join(topics)} pushed:>{date_from} stars:>20"
 
     url = "https://api.github.com/search/repositories"
     headers = {
@@ -66,11 +152,48 @@ def fetch_github_trending():
         r = requests.get(url, headers=headers, params=params, timeout=30)
         r.raise_for_status()
         repos = r.json().get("items", [])
-        print(f"✅ 成功获取 {len(repos)} 个 GitHub 项目")
+        print(f"✅ 策略3成功获取 {len(repos)} 个话题项目")
         return repos
     except Exception as e:
-        print(f"❌ GitHub 获取失败: {e}")
+        print(f"❌ 策略3失败: {e}")
         return []
+
+
+def merge_and_deduplicate_repos(repos_list):
+    """合并多个仓库列表并去重"""
+    seen = set()
+    merged = []
+
+    for repos in repos_list:
+        for repo in repos:
+            repo_id = repo.get('id')
+            if repo_id and repo_id not in seen:
+                seen.add(repo_id)
+                merged.append(repo)
+
+    # 按stars排序
+    merged.sort(key=lambda x: x.get('stargazers_count', 0), reverse=True)
+
+    # 取前15个
+    return merged[:15]
+
+
+def fetch_github_all_strategies():
+    """执行所有GitHub获取策略并合并结果"""
+    print("\n" + "=" * 60)
+    print("🚀 开始多策略获取 GitHub 项目")
+    print("=" * 60)
+
+    # 执行三个策略
+    trending_repos = fetch_github_trending_repos()
+    new_stars = fetch_github_new_stars()
+    topic_repos = fetch_github_trending_topics()
+
+    # 合并去重
+    all_repos = merge_and_deduplicate_repos([trending_repos, new_stars, topic_repos])
+
+    print(f"\n✅ 总计获取 {len(all_repos)} 个去重后的项目")
+    return all_repos
 
 
 def format_github_data(repos):
@@ -79,13 +202,25 @@ def format_github_data(repos):
         return ""
 
     blocks = []
-    for i, repo in enumerate(repos, 1):
+    for i, repo in enumerate(repos[:10], 1):  # 只取前10个展示
+        # 计算更新时间
+        updated_at = repo.get('updated_at', '')
+        if updated_at:
+            try:
+                updated_date = datetime.strptime(updated_at, "%Y-%m-%dT%H:%M:%SZ")
+                days_ago = (datetime.utcnow() - updated_date).days
+                update_info = f"更新于 {days_ago} 天前"
+            except:
+                update_info = "最近更新"
+        else:
+            update_info = ""
+
         blocks.append(f"""
-{i}. 【{repo.get('name')}】
-   ⭐ Stars: {repo.get('stargazers_count')}
-   📝 描述: {repo.get('description', '无描述')}
-   🔗 链接: {repo.get('html_url')}
-   👤 作者: {repo.get('owner', {}).get('login')}
+{i}. 【{repo.get('full_name', repo.get('name'))}】
+   ⭐ Stars: {repo.get('stargazers_count', 0):,}
+   🔥 {update_info}
+   📝 {repo.get('description', '暂无描述')[:150]}
+   🔗 {repo.get('html_url')}
 """)
     return "\n".join(blocks)
 
@@ -100,7 +235,7 @@ def fetch_ai_news():
     date_from = (datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%d")
 
     params = {
-        "q": "artificial intelligence OR ChatGPT OR OpenAI OR Google AI OR Claude OR Gemini",
+        "q": "artificial intelligence OR ChatGPT OR OpenAI OR Google AI OR Claude OR Gemini OR DeepMind",
         "language": "en",
         "from": date_from,
         "sortBy": "publishedAt",
@@ -128,7 +263,7 @@ def fetch_economics_news():
     date_from = (datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%d")
 
     params = {
-        "q": "economics OR stock market OR Federal Reserve OR inflation OR GDP OR economy",
+        "q": "economics OR stock market OR Federal Reserve OR inflation OR GDP OR economy OR tech stocks",
         "language": "en",
         "from": date_from,
         "sortBy": "publishedAt",
@@ -153,14 +288,14 @@ def format_news_data(articles, category=""):
         return ""
 
     blocks = []
-    for i, a in enumerate(articles, 1):
+    for i, a in enumerate(articles[:10], 1):  # 只取前10条
         published = a.get('publishedAt', '')[:10]  # 只取日期部分
         blocks.append(f"""
 {i}. 【{a.get('title', '无标题')}】
    📰 来源: {a.get('source', {}).get('name', '未知')}
    📅 日期: {published}
-   📝 摘要: {a.get('description', '无摘要')}
-   🔗 链接: {a.get('url')}
+   📝 摘要: {a.get('description', '无摘要')[:200]}
+   🔗 {a.get('url')}
 """)
     return "\n".join(blocks)
 
@@ -184,6 +319,7 @@ def llm_integrate_and_summarize(github_data, ai_news_data, econ_news_data):
 1. **去重**: 识别并合并重复或高度相似的内容
 2. **整合**: 将三个板块的信息有机整合
 3. **总结**: 提炼关键信息，突出重点
+4. **突出价值**: 重点介绍真正有价值、有创新性的项目和新闻
 
 **输出格式（中文）：**
 
@@ -191,10 +327,13 @@ def llm_integrate_and_summarize(github_data, ai_news_data, econ_news_data):
 （3-5条最重要的信息，每条1-2句话）
 
 ## 💻 GitHub 热门项目
-（挑选2-3个最值得关注的项目，简述亮点）
+（挑选3-5个最值得关注的项目，每个项目包括：
+- 项目名称和简介
+- 为什么值得关注
+- Stars数量）
 
 ## 🤖 AI 行业动态
-（整合AI新闻，去除重复内容，提炼2-3个核心趋势或事件）
+（整合AI新闻，去除重复内容，提炼3-4个核心趋势或事件）
 
 ## 💰 经济要闻
 （整合经济新闻，去除重复内容，提炼2-3个关键信息）
@@ -203,10 +342,11 @@ def llm_integrate_and_summarize(github_data, ai_news_data, econ_news_data):
 （1-2句话的综合判断或趋势预测）
 
 **注意：**
-- 总字数控制在 500 字以内
+- 总字数控制在 600 字以内
 - 理性、专业的分析视角
 - 去除明显重复的新闻
 - 突出最有价值的信息
+- 如果某个板块数据较少，可以适当简化
 
 ---
 
@@ -302,8 +442,8 @@ def main():
     # 1. 环境检查
     check_env()
 
-    # 2. 数据收集
-    github_repos = fetch_github_trending()
+    # 2. 数据收集（多策略）
+    github_repos = fetch_github_all_strategies()
     ai_news = fetch_ai_news()
     econ_news = fetch_economics_news()
 
@@ -321,12 +461,20 @@ def main():
 ⚠️ 抱歉，今日数据获取失败，可能原因：
 - API 配额已用完
 - 网络连接问题
-- 查询条件过严
+- 查询条件未匹配到结果
 
 请检查环境变量配置和网络连接。
 """
         send_email(fallback_content)
         return
+
+    # 数据统计
+    print("\n" + "=" * 60)
+    print("📊 数据收集统计：")
+    print(f"   GitHub 项目: {len(github_repos)} 个")
+    print(f"   AI 新闻: {len(ai_news)} 条")
+    print(f"   经济新闻: {len(econ_news)} 条")
+    print("=" * 60)
 
     # 4. LLM 整合与总结
     final_summary = llm_integrate_and_summarize(github_text, ai_news_text, econ_news_text)
@@ -342,6 +490,7 @@ def main():
 {'=' * 60}
 📬 本报告由自动化工作流生成
 ⏰ 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+📊 数据来源: GitHub ({len(github_repos)}项目) + NewsAPI ({len(ai_news) + len(econ_news)}条新闻)
 {'=' * 60}
 """
 
@@ -349,7 +498,7 @@ def main():
     print("\n" + "=" * 60)
     print("📄 邮件内容预览：")
     print("=" * 60)
-    print(final_content[:500] + "..." if len(final_content) > 500 else final_content)
+    print(final_content[:800] + "..." if len(final_content) > 800 else final_content)
     print("=" * 60)
 
     # 7. 发送邮件
